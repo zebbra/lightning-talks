@@ -24,6 +24,7 @@ Filter forms can quickly become difficult to manage and often they lead to a lot
 ![](files/screenshot.png)
 
 > **ℹ️ NOTE:** This is an interactive Elixir LiveBook that you can run on your computer. Go to https://livebook.dev/ to learn more.
+> [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fgithub.com%2Fzebbra%2Flightning-talks%2Fblob%2Fmain%2Ftalks%2F2025-11-06%2520-%2520ash-calculations%2Fash-calculations.livemd)
 
 ### Key Concepts Demonstrated
 
@@ -360,7 +361,7 @@ This separation allows us to:
 defmodule Blog.Post.Filter do
   @moduledoc """
   An embedded resource that models filter state for blog posts.
-  
+
   This resource encapsulates all filter logic, including:
   - Filter attributes (what can be filtered)
   - Query building through calculations
@@ -507,28 +508,28 @@ The power of this approach lies in how calculations build on each other:
 graph LR
     BQ[base_query<br/>All Posts]
     BC[base_count<br/>Total Count]
-    
+
     SQ[search_query<br/>Posts matching search term]
     SC[search_count<br/>Count after search]
-    
+
     RQ[result_query<br/>Final filtered posts]
     RC[result_count<br/>Final count]
-    
+
     CF[category_facets<br/>Count per category]
     SF[status_facets<br/>Count per status]
     AF[author_facets<br/>Count per author]
-    
+
     BQ --> BC
     BQ --> SQ
-    
+
     SQ --> SC
     SQ --> RQ
     SQ --> CF
     SQ --> SF
     SQ --> AF
-    
+
     RQ --> RC
-    
+
     style BQ fill:#e1f5fe
     style SQ fill:#fff3e0
     style RQ fill:#e8f5e9
@@ -573,7 +574,7 @@ This calculation applies text search to the base query:
 defmodule Blog.Post.Filter.Calculations.SearchQuery do
   @moduledoc """
   Ash calculation that creates a query with search terms applied.
-  
+
   This calculation:
   - Takes the base query from the filter
   - Applies text search if a search term is present
@@ -673,7 +674,7 @@ defmodule Blog.Post.Filter.Calculations.ResultQuery do
   defp apply_filter(query, {:authors, [_ | _] = authors}, _ctx) do
     Ash.Query.filter(query, author in ^authors)
   end
-  
+
   defp apply_filter(query, {:mine?, true}, ctx) do
     case ctx.actor do
       nil -> Ash.Query.add_error(query, :mine?, "Actor is required")
@@ -704,7 +705,7 @@ A reusable calculation that counts the results of any query:
 defmodule Blog.Post.Filter.Calculations.Count do
   @moduledoc """
   Ash calculation that counts query results.
-  
+
   This is a generic calculation that can count the results
   of any query passed via options. It's used multiple times
   in the filter resource to show counts at different stages.
@@ -796,13 +797,13 @@ This provides better UX than traditional approaches where facets might disappear
 defmodule Blog.Post.Filter.Calculations.Facet do
   @moduledoc """
   Ash calculation that generates facet counts for filtering.
-  
+
   Facets show the count of results for each unique value
   of a field. This helps users understand:
   - What filter options are available
   - How many results match each option
   - Which filters will yield results
-  
+
   We calculate facets from the search_query (not result_query)
   so users can see all available options, not just the currently
   filtered ones.
@@ -927,7 +928,7 @@ Category facets after search: [{"elixir", 9}, {"ai", 1}, {"devops", 1}, {"testin
 
 ```elixir
 # Apply multiple filters
-combined_filter = 
+combined_filter =
   Blog.Post.Filter.update!(default_filter, %{
     search: "websocket",
     category: "phoenix",
@@ -957,7 +958,7 @@ Final filtered count: 2
 
 ```elixir
 # Test the "mine?" filter with an actor
-peter_filter = 
+peter_filter =
   Blog.Post.Filter.new!()
   |> Blog.Post.Filter.update!(%{mine?: true}, actor: "Peter")
 
@@ -990,7 +991,7 @@ This livebook is using [kino_phoenix_livebook](https://github.com/elepedus/kino_
 ```elixir
 defmodule ExampleWeb.Layout do
   use Phoenix.Component
-  
+
   alias KinoPhoenixLiveView.ProxyEndpoint
 
   def render("root.html", assigns) do
@@ -1010,7 +1011,7 @@ defmodule ExampleWeb.Layout do
         <script src={ProxyEndpoint.static_path("/assets/phoenix_live_view/phoenix_live_view.js")}></script>
         <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
         <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-        
+
         <script>
           // Set global hooks and uploaders objects to be used by the LiveSocket,
           // so they can be overwritten in user provided templates.
@@ -1123,7 +1124,7 @@ defmodule ExampleWeb.CoreComponents do
 
   def input(%{type: "facet-filter"} = assigns) do
     %{multiple: multiple, value: value} = assigns
-    
+
     assigns =
       assigns
       |> assign(:type, if(multiple, do: "checkbox", else: "radio"))
@@ -1246,16 +1247,16 @@ defmodule ExampleWeb.CoreComponents do
     ~H"""
     <div class={["tabs tabs-lift", @class]} {@rest}>
       <%= for tab <- @tab do %>
-        <input 
-          type="radio" 
-          name={tab[:name]} 
+        <input
+          type="radio"
+          name={tab[:name]}
           class="tab"
           aria-label={tab[:label]}
-          checked={tab[:name] == @selected} 
+          checked={tab[:name] == @selected}
           phx-click={@change}
           phx-value-tab={tab[:name]} />
-  
-        <div 
+
+        <div
           :if={tab[:name] == @selected}
           class="tab-content bg-base-100 border-base-300">
           {render_slot(tab)}
