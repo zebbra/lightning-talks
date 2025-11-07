@@ -1,0 +1,1486 @@
+<!-- livebook:{"app_settings":{"access_type":"public","auto_shutdown_ms":3600000,"show_source":true,"slug":"ash-calculations"},"file_entries":[{"name":"posts.csv","type":"attachment"},{"name":"screenshot.png","type":"attachment"}],"persist_outputs":true} -->
+
+# Ash Calculations for Fun and Profit
+
+```elixir
+Application.put_env(:ash, :validate_domain_resource_inclusion?, false)
+Application.put_env(:ash, :validate_domain_config_inclusion?, false)
+
+Mix.install(
+  [
+    {:ash, "~> 3.0"},
+    {:ash_phoenix, "~> 2.3"},
+    {:kino_explorer, "~> 0.1.20"},
+    {:kino_phoenix_live_view, "~> 0.1.4"}
+  ],
+  consolidate_protocols: false
+)
+```
+
+## Introduction
+
+Filter forms can quickly become difficult to manage and often they lead to a lot of filtering logic scattered across LiveViews and/or LiveComponents. This example demonstrates how Ash [embedded resources](https://hexdocs.pm/ash/embedded-resources.html) and [calculations](https://hexdocs.pm/ash/calculations.html) can simplify filter forms while providing a scalable, maintainable architecture.
+
+![](files/screenshot.png)
+
+> **ℹ️ NOTE:** This is an interactive Elixir LiveBook that you can run on your computer. Go to https://livebook.dev/ to learn more.
+
+### Key Concepts Demonstrated
+
+This LiveBook showcases several powerful Ash patterns:
+
+* **Embedded Resources as Form State Models** - Instead of managing filter state directly in LiveView, we model it as an embedded resource with attributes, validations, and calculations
+* **Progressive Query Building with Calculations** - Calculations that build on each other to create a pipeline of query transformations
+* **Faceted Search** - Using calculations to generate counts for filter options dynamically
+* **AshPhoenix Form Integration** - Seamless integration between embedded resources and Phoenix forms
+
+### Why Embedded Resources for Filters?
+
+Traditional approaches often scatter filter logic across LiveViews. Using an embedded resource provides:
+
+* **Single source of truth** for filter state and logic
+* **Built-in validation** of filter parameters
+* **Reusable calculations** that can be loaded on-demand
+* **Type safety and casting** through Ash's attribute system
+* **Form integration** via AshPhoenix.Form
+* **Testability** - Each piece of logic can be tested in isolation
+
+## Ash Setup
+
+Let's start by defining the Ash resources required for this demo. We're using `Ash.DataLayer.Ets` as the data layer to keep the dependencies minimal, but this pattern works equally well with PostgreSQL or any other Ash data layer.
+
+### The Blog Post Resource
+
+Our example models a simple blog system with posts that have authors, categories, and publishing states:
+
+```elixir
+defmodule Blog.Post do
+  use Ash.Resource,
+    domain: Blog,
+    data_layer: Ash.DataLayer.Ets
+
+  defmodule Status do
+    use Ash.Type.Enum, values: [:draft, :published, :archived]
+  end
+
+  actions do
+    defaults([:read, create: :*, update: :*])
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+
+    attribute :author, :string do
+      allow_nil?(false)
+      public?(true)
+    end
+
+    attribute :title, :string do
+      allow_nil?(false)
+      public?(true)
+    end
+
+    attribute :category, :string do
+      allow_nil?(false)
+      public?(true)
+    end
+
+    attribute :status, Status do
+      allow_nil?(false)
+      public?(true)
+      default(:draft)
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Blog.Post, <<70, 79, 82, 49, 0, 0, 251, ...>>, :ok}
+```
+
+### The Blog Domain
+
+[Domains](https://hexdocs.pm/ash/domains.html) in Ash organize related resources and provide a public API. Here we define a simple domain with a code interface for creating posts:
+
+```elixir
+defmodule Blog do
+  use Ash.Domain
+
+  resources do
+    resource(Blog.Post) do
+      define(:create_post, action: :create)
+    end
+  end
+end
+
+Application.put_env(:blog, :ash_domains, [Blog])
+Ash.Info.mermaid_overview(:blog) |> Kino.Mermaid.new()
+```
+
+<!-- livebook:{"output":true} -->
+
+```mermaid
+{"caption":null,"diagram":"classDiagram\n    Blog\n    class Blog.Post {\n        Domain: Blog\n        Source: Projects/lightning-talks/talks/ash-calculations/ash-calculations.livemd#cell:acfphvlv2vu7qyif\n\n        Ash.Type.UUID id\n        Ash.Type.String author\n        Ash.Type.String title\n        Ash.Type.String category\n        Blog.Post.Status status\n        update(Ash.Type.String author, Ash.Type.String title, Ash.Type.String category, Blog.Post.Status status)\n        create(Ash.Type.String author, Ash.Type.String title, Ash.Type.String category, Blog.Post.Status status)\n        read()\n    }\n\n\n","download":true}
+```
+
+## Sample Data Generation
+
+To demonstrate our filter functionality, let's load some sample blog posts. The data includes posts with various authors, categories, and statuses to showcase the filtering capabilities:
+
+```elixir
+df =
+  Kino.FS.file_path("posts.csv")
+  |> Explorer.DataFrame.from_csv!()
+```
+
+<!-- livebook:{"output":true} -->
+
+```text
+#Explorer.DataFrame<
+  Polars[51 x 4]
+  title string ["Understanding GenServers in Elixir", "Building Real-Time Features with Phoenix LiveView", "Exploring Ash Framework for Rapid API Development", "Optimizing Ecto Queries for Large Datasets", "How to Deploy a Phoenix App with Docker and Fly.io", ...]
+  category string ["elixir", "phoenix", "ash", "elixir", "phoenix", ...]
+  status string ["draft", "published", "archived", "published", "draft", ...]
+  author string ["John", "Peter", "Bob", "Peter", "Peter", ...]
+>
+```
+
+```elixir
+df
+|> Explorer.DataFrame.to_rows()
+|> Ash.bulk_create!(Blog.Post, :create)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+
+11:28:34.598 [debug] Creating 51 Blog.Post:
+
+%{id: "7259940d-c377-4bbb-8a81-6d673d5c5398", status: :draft,
+ title: "Understanding GenServers in Elixir", author: "John",
+ category: "elixir"}
+%{id: "1626ad2b-6ebc-40ff-9039-9ddfe7344cc0", status: :published,
+ title: "Building Real-Time Features with Ph..., author: "Peter",
+ category: "phoenix"}
+%{id: "fc6d3930-b94f-42b2-8285-85651989f3e5", status: :archived,
+ title: "Exploring Ash Framework for Rapid A..., author: "Bob", category: "ash"}
+%{id: "22461acc-ddf4-4d48-bd77-efec47bc32ea", status: :published,
+ title: "Optimizing Ecto Queries for Large D..., author: "Peter",
+ category: "elixir"}
+%{id: "3296d012-bd0e-426b-870a-5d420e008091", status: :draft,
+ title: "How to Deploy a Phoenix App with Do..., author: "Peter",
+ category: "phoenix"}
+%{id: "6f03b8ee-ad23-49bb-bb81-9fe6118c1226", status: :published,
+ title: "Ash Authentication: A Practical Gui..., author: "Peter",
+ category: "ash"}
+%{id: "b643ca98-a208-45c5-b035-8fd5b4e1d16f", status: :archived,
+ title: "Using Oban for Background Jobs in E..., author: "Peter",
+ category: "elixir"}
+%{id: "ea9ea497-017c-4325-8f10-a23c87f8898e", status: :published,
+ title: "Real-World Authorization with Phoen..., author: "Peter",
+ category: "phoenix"}
+%{id: "efff9742-d7b0-400c-83bb-1247a539c1aa", status: :draft,
+ title: "Building Declarative APIs with Ash ..., author: "Peter",
+ category: "ash"}
+%{id: "3b0c3a85-0512-44a0-b395-a0e586be3ce9", status: :published,
+ title: "Pattern Matching Tips You Might Not..., author: "Paul",
+ category: "elixir"}
+%{id: "69094612-7b4f-41cf-b018-498692ce661d", status: :published,
+ title: "WebSocket Scaling with Phoenix Chan..., author: "Alice",
+ category: "phoenix"}
+%{id: "bbcf07f0-5ca1-48ee-860b-88dc84938706", status: :archived,
+ title: "Ash Data Layer Deep Dive", author: "Alice", category: "ash"}
+%{id: "8a3d2817-72bf-4445-a85e-e358bcc5a628", status: :draft,
+ title: "Supercharging Your Mix Tasks", author: "Peter", category: "elixir"}
+%{id: "84ad8ff3-65b6-4abd-a37c-b793d55cbd6c", status: :archived,
+ title: "Multi-Tenant Architectures in Phoen..., author: "Alice",
+ category: "phoenix"}
+%{id: "77ce395f-8ea5-40de-989a-f0364fe28564", status: :published,
+ title: "Declarative Workflows in Ash Flow", author: "Peter", category: "ash"}
+%{id: "57abb320-fd27-4b7c-a419-30f3a456abf1", status: :published,
+ title: "Testing Strategies for Elixir Appli..., author: "Alice",
+ category: "elixir"}
+%{id: "fd8547ed-56f4-45da-a143-f74a1f132034", status: :draft,
+ title: "Optimizing Asset Delivery with Phoe..., author: "Peter",
+ category: "phoenix"}
+%{id: "81b8f273-f86c-4783-9ef9-2cee49dec87b", status: :draft,
+ title: "Integrating Ash with LiveView", author: "Peter", category: "ash"}
+%{id: "d6157361-a45b-485a-861c-c7b9fd85a34c", status: :archived,
+ title: "Designing Fault-Tolerant Systems wi..., author: "Peter",
+ category: "elixir"}
+%{id: "d109fe43-fa32-4268-ad7a-eaf3705079a4", status: :published,
+ title: "Deploying Phoenix Apps to Kubernetes", author: "Peter",
+ category: "phoenix"}
+%{id: "672f5022-8476-4c83-998b-ac0ff99b51d5", status: :draft,
+ title: "Understanding GenServers in Elixir", author: "Peter",
+ category: "elixir"}
+%{id: "ed6192b8-1919-4b3e-b6b1-a33eb87066c1", status: :published,
+ title: "Building Real-Time Features with Ph..., author: "Peter",
+ category: "phoenix"}
+%{id: "b0d43cf7-a5f1-465a-934f-3fd486bac62e", status: :archived,
+ title: "Exploring Ash Framework for Rapid A..., author: "Alice",
+ category: "ash"}
+%{id: "b85d2564-a59a-46c4-8698-c2d3acc64e51", status: :published,
+ title: "Optimizing Ecto Queries for Large D..., author: "Peter",
+ category: "elixir"}
+%{id: "5119e984-72a5-473a-b8e3-c81bb7d8f454", status: :draft,
+ title: "How to Deploy a Phoenix App with Do..., author: "John",
+ category: "phoenix"}
+%{id: "2535c5bd-d647-421d-a847-c43f86f03bdb", status: :published,
+ title: "Ash Authentication: A Practical Gui..., author: "Peter",
+ category: "ash"}
+%{id: "2480f992-a730-4df1-81b7-0e653b672398", status: :archived,
+ title: "Using Oban for Background Jobs in E..., author: "Peter",
+ category: "elixir"}
+%{id: "dce873ad-ef40-4769-8520-542dace8f0f5", status: :published,
+ title: "Real-World Authorization with Phoen..., author: "Alice",
+ category: "phoenix"}
+%{id: "be93e30c-dd58-46b4-a5d3-4900b796c0a5", status: :draft,
+ title: "Building Declarative APIs with Ash ..., author: "Peter",
+ category: "ash"}
+%{id: "0934c990-19a8-4ca0-91f8-d774e163b262", status: :published,
+ title: "Pattern Matching Tips You Might Not..., author: "Paul",
+ category: "elixir"}
+%{id: "6c4e1caa-6e99-49af-ad9a-efa970c14dbc", status: :published,
+ title: "WebSocket Scaling with Phoenix Chan..., author: "Peter",
+ category: "phoenix"}
+%{id: "03b2131a-8bbe-4f70-97a2-d1145a01ba62", status: :archived,
+ title: "Ash Data Layer Deep Dive", author: "John", category: "ash"}
+%{id: "32f1ab28-0df3-4aef-9b01-cd5b4d9a444e", status: :draft,
+ title: "Supercharging Your Mix Tasks", author: "Peter", category: "elixir"}
+%{id: "c084aacb-96ea-43ed-93f3-b048fded7a32", status: :archived,
+ title: "Multi-Tenant Architectures in Phoen..., author: "Peter",
+ category: "phoenix"}
+%{id: "d02f3b18-6e69-41c8-a277-d5ae52fbecdb", status: :published,
+ title: "Declarative Workflows in Ash Flow", author: "Peter", category: "ash"}
+%{id: "d805bec3-ae25-4a24-88ff-12ce3f8ed4fb", status: :published,
+ title: "Testing Strategies for Elixir Appli..., author: "John",
+ category: "testing"}
+%{id: "31b17dc1-57e1-4ecd-8124-59c720b04d61", status: :draft,
+ title: "Optimizing Asset Delivery with Phoe..., author: "Peter",
+ category: "phoenix"}
+%{id: "783f071b-510e-400a-8a7c-affa02b2b7fa", status: :draft,
+ title: "Integrating Ash with LiveView", author: "Peter", category: "ash"}
+%{id: "adee3cd1-c7f1-4167-885a-ef5a9ead35cc", status: :archived,
+ title: "Designing Fault-Tolerant Systems wi..., author: "Paul",
+ category: "elixir"}
+%{id: "16ede4e8-ef75-4914-a310-1fc52c11299a", status: :published,
+ title: "Deploying Phoenix Apps to Kubernetes", author: "Thomas",
+ category: "devops"}
+%{id: "1e95d9de-256e-4786-90ab-0c2cabcbd9bc", status: :published,
+ title: "Continuous Deployment with GitHub A..., author: "Thomas",
+ category: "devops"}
+%{id: "f4299af1-3638-4471-aef9-85b3f4f994e8", status: :published,
+ title: "Monitoring Phoenix Applications wit..., author: "Thomas",
+ category: "devops"}
+%{id: "7e7abae9-b6f7-49b3-b4e5-cd4771b77591", status: :draft,
+ title: "Property-Based Testing with StreamD..., author: "Thomas",
+ category: "testing"}
+%{id: "5ca95930-2d17-48dd-9162-87e4a9d42238", status: :published,
+ title: "How Elixir Handles Concurrency the ..., author: "Thomas",
+ category: "elixir"}
+%{id: "88ca5001-fc2b-435d-b399-0e1de8fda5e4", status: :draft,
+ title: "Using Swoosh for Transactional Emai..., author: "Peter",
+ category: "phoenix"}
+%{id: "756cdf71-0e76-4e2e-88f2-f8a2b62a9ce8", status: :published,
+ title: "Scaling Ash APIs in Production", author: "Thomas", category: "ash"}
+%{id: "dbda51bf-426f-452c-8ed0-23ef750f2b7a", status: :published,
+ title: "Building a Simple Chatbot with Elix..., author: "Thomas",
+ category: "ai"}
+%{id: "76e10f21-abda-494a-b367-fc8c6b6b8953", status: :draft,
+ title: "AI-Powered Error Triage in Phoenix ..., author: "Thomas",
+ category: "ai"}
+%{id: "63b92e1e-85d7-4779-aaee-3b47254f9d74", status: :archived,
+ title: "CI/CD Pipelines for Elixir Projects", author: "Thomas",
+ category: "devops"}
+%{id: "4e91baac-26fe-4631-b62d-2a9c31565aa9", status: :published,
+ title: "Testing GraphQL Endpoints in Phoenix", author: "Thomas",
+ category: "testing"}
+%{id: "81d15f6c-01f7-4013-b889-90c262a664e6", status: :published,
+ title: "Event-Driven Architectures with Eli..., author: "Thomas",
+ category: "elixir"}
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+%Ash.BulkResult{status: :success, errors: nil, records: nil, notifications: nil, error_count: 0}
+```
+
+Let's verify our data loaded correctly and see what we're working with:
+
+```elixir
+Blog.Post
+|> Ash.read!()
+|> Enum.take(5)
+|> Kino.DataTable.new(name: "Sample Posts", keys: [:title, :author, :category, :status])
+```
+
+<!-- livebook:{"output":true} -->
+
+```text
+[%{id: "03b2131a-8bbe-4f70-97a2-d1145a01ba62", status: :archived, title: "Ash Data Layer Deep Dive", author: "John", category: "ash", calculations: %{}, aggregates: %{}}, %{id: "0934c990-19a8-4ca0-91f8-d774e163b262", status: :published, title: "Pattern Matching Tips You Might Not Know", author: "Paul", category: "elixir", calculations: %{}, aggregates: %{}}, %{id: "1626ad2b-6ebc-40ff-9039-9ddfe7344cc0", status: :published, title: "Building Real-Time Features with Phoenix LiveView", author: "Peter", category: "phoenix", calculations: %{}, aggregates: %{}}, %{id: "16ede4e8-ef75-4914-a310-1fc52c11299a", status: :published, title: "Deploying Phoenix Apps to Kubernetes", author: "Thomas", category: "devops", calculations: %{}, aggregates: %{}}, %{id: "1e95d9de-256e-4786-90ab-0c2cabcbd9bc", status: :published, title: "Continuous Deployment with GitHub Actions and Fly.io", author: "Thomas", category: "devops", calculations: %{}, aggregates: %{}}]
+```
+
+## Filter Resource - The Heart of Our Solution
+
+Ash embedded resources are a great way to encapsulate form filter logic! They allow us to use actions and validations, which would otherwise be implemented in a LiveView or LiveComponent.
+
+### Requirements
+
+In this example, we want to build a search page that does the following (similar to how [Galaxus](https://galaxus.ch) works):
+
+* The page should have a **search** input field, where user can search posts by title
+* On the left, we want to show a set of *facets* (attribute values of the search results with the number of results per value)
+* The filter should generate a `results_query` (an `Ash.Query` that, when read, will return the results.
+* We want count the number of records that matched the search and facet filter
+
+### The Filter Pipeline Pattern
+
+Our filter resource implements a pipeline pattern using calculations:
+
+1. **base_query** → The starting point (all posts)
+2. **search_query** → Apply text search to base_query
+3. **search_count** → Count results after search
+4. **result_query** → Apply all other filters to search_query
+5. **result_count** → Count final filtered results
+6. **facets** → Generate counts for each filterable field
+
+This separation allows us to:
+
+* Generate facets based on the search results (not the final filtered results)
+* Show counts at each stage of filtering
+* Reuse query logic across different contexts
+* Provide a better user experience with progressive filtering
+
+```elixir
+defmodule Blog.Post.Filter do
+  @moduledoc """
+  An embedded resource that models filter state for blog posts.
+  
+  This resource encapsulates all filter logic, including:
+  - Filter attributes (what can be filtered)
+  - Query building through calculations
+  - Facet generation for UI
+  - Validation of filter parameters
+  """
+
+  use Ash.Resource,
+    data_layer: :embedded,
+    domain: Blog
+
+  require Ash.Query
+
+  alias Blog.Post
+  alias Blog.Post.Status
+  alias Blog.Post.Filter.Calculations
+
+  actions do
+    defaults([:read, create: :*, update: :*])
+  end
+
+  changes do
+    # Automatically load all calculations when the filter is updated
+    # This ensures the UI always has fresh data
+    change(
+      load([
+        :base_count,
+        :search_query,
+        :search_count,
+        :result_query,
+        :result_count,
+        :status_facets,
+        :category_facets,
+        :author_facets
+      ])
+    )
+  end
+
+  attributes do
+    # The starting query - can be customized for different contexts
+    # For example: passing a pre-filtered query for user-specific posts
+    attribute :base_query, :struct do
+      constraints(instance_of: Ash.Query)
+      allow_nil?(false)
+      default(fn -> Ash.Query.new(Post) end)
+      public?(true)
+    end
+
+    # Free-text search across titles
+    attribute :search, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    # Filter by category (single selection)
+    attribute :category, :string do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    # Filter by multiple statuses
+    attribute :states, {:array, Status} do
+      constraints(remove_nil_items?: true)
+      allow_nil?(true)
+      public?(true)
+      default([:published])
+    end
+
+    # Filter by multiple authors
+    attribute :authors, {:array, :string} do
+      constraints(remove_nil_items?: true)
+      allow_nil?(true)
+      public?(true)
+    end
+
+    # Filter to show only the current user's posts
+    attribute :mine?, :boolean do
+      allow_nil?(false)
+      public?(true)
+      default(false)
+    end
+  end
+
+  calculations do
+    # Count of all available posts
+    calculate :base_count, :integer do
+      calculation({Calculations.Count, query: :base_query})
+    end
+
+    # Query with search applied
+    calculate :search_query, :struct do
+      constraints(instance_of: Ash.Query)
+      calculation({Calculations.SearchQuery, query: :base_query})
+    end
+
+    # Count after search (before other filters)
+    calculate :search_count, :integer do
+      calculation({Calculations.Count, query: :search_query})
+    end
+
+    # Final query with all filters applied
+    calculate :result_query, :struct do
+      constraints(instance_of: Ash.Query)
+      calculation({Calculations.ResultQuery, query: :search_query})
+    end
+
+    # Final count of filtered results
+    calculate :result_count, :integer do
+      calculation({Calculations.Count, query: :result_query})
+    end
+
+    # Facets for UI - based on search_query to show available options
+    calculate :category_facets, :map do
+      calculation({Calculations.Facet, field: :category, query: :search_query})
+    end
+
+    calculate :status_facets, :map do
+      calculation({Calculations.Facet, field: :status, query: :search_query})
+    end
+
+    calculate :author_facets, :map do
+      calculation({Calculations.Facet, field: :author, query: :search_query})
+    end
+  end
+
+  code_interface do
+    define(:new, action: :create, args: [{:optional, :base_query}])
+    define(:update, action: :update)
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Blog.Post.Filter, <<70, 79, 82, 49, 0, 3, 208, ...>>, :ok}
+```
+
+### Understanding the Calculation Chain
+
+The power of this approach lies in how calculations build on each other:
+
+```mermaid
+graph LR
+    BQ[base_query<br/>All Posts]
+    BC[base_count<br/>Total Count]
+    
+    SQ[search_query<br/>Posts matching search term]
+    SC[search_count<br/>Count after search]
+    
+    RQ[result_query<br/>Final filtered posts]
+    RC[result_count<br/>Final count]
+    
+    CF[category_facets<br/>Count per category]
+    SF[status_facets<br/>Count per status]
+    AF[author_facets<br/>Count per author]
+    
+    BQ --> BC
+    BQ --> SQ
+    
+    SQ --> SC
+    SQ --> RQ
+    SQ --> CF
+    SQ --> SF
+    SQ --> AF
+    
+    RQ --> RC
+    
+    style BQ fill:#e1f5fe
+    style SQ fill:#fff3e0
+    style RQ fill:#e8f5e9
+    style BC fill:#f3e5f5
+    style SC fill:#f3e5f5
+    style RC fill:#f3e5f5
+    style CF fill:#fce4ec
+    style SF fill:#fce4ec
+    style AF fill:#fce4ec
+```
+
+Each calculation receives the filter record and can access other calculated values through loading. This creates a reactive system where changing the filter automatically recalculates dependent values.
+
+**Key Benefits:**
+
+* **Lazy Loading**: Calculations are only computed when requested
+* **Caching**: Calculated values are cached on the record
+* **Composability**: Calculations can use other calculations as inputs
+* **Testability**: Each calculation can be tested independently
+
+## Query Building Calculations
+
+### Module Calculations vs Expression Calculations
+
+We use module calculations here because:
+
+* **Complex Logic**: Our filtering logic is too complex for simple expressions
+* **Reusability**: These calculations can be shared across resources
+* **Performance**: We can optimize query building in Elixir code
+* **Debugging**: Easier to debug and test than embedded expressions
+
+Each calculation module follows the same pattern:
+
+1. `load/3` - Declare dependencies (which attributes/calculations to load)
+2. `calculate/3` - Transform the input data to produce the calculated value
+
+### Search Query Calculation
+
+This calculation applies text search to the base query:
+
+```elixir
+defmodule Blog.Post.Filter.Calculations.SearchQuery do
+  @moduledoc """
+  Ash calculation that creates a query with search terms applied.
+  
+  This calculation:
+  - Takes the base query from the filter
+  - Applies text search if a search term is present
+  - Splits search terms and matches all of them (AND logic)
+  - Returns the modified query for further processing
+  """
+
+  use Ash.Resource.Calculation
+
+  require Ash.Query
+
+  @impl true
+  def calculate(filters, opts, context) do
+    Enum.map(filters, &search_query(&1, opts, context))
+  end
+
+  defp search_query(filter, opts, ctx) do
+    query = Keyword.get(opts, :query)
+
+    filter
+    |> Map.fetch!(query)
+    |> apply_search(filter.search, ctx)
+  end
+
+  defp apply_search(query, search, _ctx) when is_binary(search) do
+    terms = String.split(search)
+
+    # Each term must be present in the title (AND logic)
+    Enum.reduce(terms, query, fn term, query ->
+      Ash.Query.filter(query, contains(string_downcase(title), string_downcase(^term)))
+    end)
+  end
+
+  defp apply_search(query, _search, _ctx) do
+    query
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Blog.Post.Filter.Calculations.SearchQuery, <<70, 79, 82, 49, 0, 0, 21, ...>>,
+ {:apply_search, 3}}
+```
+
+### Result Query Calculation
+
+This calculation applies all non-search filters to create the final query:
+
+```elixir
+defmodule Blog.Post.Filter.Calculations.ResultQuery do
+  @moduledoc """
+  Ash calculation that creates the final result query.
+
+  This calculation:
+  - Takes the search_query as input
+  - Applies category, status, and ownership filters
+  - Handles actor-based filtering (mine? attribute)
+  - Returns the final query for execution
+  """
+
+  use Ash.Resource.Calculation
+
+  require Ash.Query
+
+  @impl true
+  def calculate(filters, opts, context) do
+    Enum.map(filters, &result_query(&1, opts, context))
+  end
+
+  defp result_query(filter, opts, ctx) do
+    query = Keyword.get(opts, :query)
+
+    filter
+    |> Ash.load!(query, actor: ctx.actor)
+    |> Map.fetch!(query)
+    |> apply_filters(filter, ctx)
+  end
+
+  defp apply_filters(query, filter, ctx) do
+    query
+    |> apply_filter({:category, filter.category}, ctx)
+    |> apply_filter({:states, filter.states}, ctx)
+    |> apply_filter({:authors, filter.authors}, ctx)
+    |> apply_filter({:mine?, filter.mine?}, ctx)
+  end
+
+  defp apply_filter(query, {:category, category}, _ctx) when is_binary(category) do
+    Ash.Query.filter(query, category == ^category)
+  end
+
+  defp apply_filter(query, {:states, [_ | _] = states}, _ctx) do
+    Ash.Query.filter(query, status in ^states)
+  end
+
+  defp apply_filter(query, {:authors, [_ | _] = authors}, _ctx) do
+    Ash.Query.filter(query, author in ^authors)
+  end
+  
+  defp apply_filter(query, {:mine?, true}, ctx) do
+    case ctx.actor do
+      nil -> Ash.Query.add_error(query, :mine?, "Actor is required")
+      actor -> Ash.Query.filter(query, author == ^actor)
+    end
+  end
+
+  defp apply_filter(query, _filter, _ctx) do
+    query
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Blog.Post.Filter.Calculations.ResultQuery, <<70, 79, 82, 49, 0, 0, 30, ...>>,
+ {:apply_filter, 3}}
+```
+
+## Filter Calculations
+
+### Count Calculation
+
+A reusable calculation that counts the results of any query:
+
+```elixir
+defmodule Blog.Post.Filter.Calculations.Count do
+  @moduledoc """
+  Ash calculation that counts query results.
+  
+  This is a generic calculation that can count the results
+  of any query passed via options. It's used multiple times
+  in the filter resource to show counts at different stages.
+  """
+
+  use Ash.Resource.Calculation
+
+  require Logger
+
+  @impl true
+  def load(_query, opts, _ctx) do
+    # Declare that we need the specified query to be loaded
+    Keyword.fetch!(opts, :query)
+  end
+
+  @impl true
+  def calculate(filters, opts, ctx) do
+    Enum.map(filters, &count(&1, opts, ctx))
+  end
+
+  defp count(filter, opts, ctx) do
+    query = Keyword.fetch!(opts, :query)
+
+    # load the required query to make sure it is up to date!
+    filter
+    |> Ash.load!(query, actor: ctx.actor)
+    |> Map.fetch!(query)
+    |> Ash.count!(actor: ctx.actor)
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Blog.Post.Filter.Calculations.Count, <<70, 79, 82, 49, 0, 0, 18, ...>>, {:count, 3}}
+```
+
+#### Important Performance
+
+This example is counting the records in memory because we are using an ETS backend. In real life you would like to use Ecto to do the counting:
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+defp alert_counts(query) do
+  with {:ok, count_query} <- alert_count_query(query) do
+    {:ok, Iris.Repo.all(count_query)}
+  end
+end
+
+defp alert_count_query(query) do
+  with {:ok, ecto_query} <- Ash.Query.data_layer_query(query) do
+    ecto_query =
+      ecto_query
+      |> exclude(:select)
+      |> select([:id, :status, :severity])
+      |> exclude(:order_by)
+
+    alert_count_query =
+      from a in subquery(ecto_query),
+        group_by: [a.status, a.severity],
+        select: %{status: a.status, severity: a.severity, count: count(a.id)}
+
+    {:ok, alert_count_query}
+  end
+end
+```
+
+<!-- livebook:{"break_markdown":true} -->
+
+### Faceted Search with Calculations
+
+Facets show how many results match each filter option. Our approach:
+
+* Calculate facets from the `search_query` (not the fully filtered results)
+* This lets users see what filters are available based on their search
+* Counts update dynamically as filters are applied
+
+Example: If a user searches for "Elixir", the category facets will show:
+
+* elixir (5)
+* phoenix (2) ← Posts mentioning "Elixir" in Phoenix category
+* ash (1) ← Posts mentioning "Elixir" in Ash category
+
+This provides better UX than traditional approaches where facets might disappear when selected.
+
+```elixir
+defmodule Blog.Post.Filter.Calculations.Facet do
+  @moduledoc """
+  Ash calculation that generates facet counts for filtering.
+  
+  Facets show the count of results for each unique value
+  of a field. This helps users understand:
+  - What filter options are available
+  - How many results match each option
+  - Which filters will yield results
+  
+  We calculate facets from the search_query (not result_query)
+  so users can see all available options, not just the currently
+  filtered ones.
+  """
+
+  use Ash.Resource.Calculation
+
+  @impl true
+  def calculate(filters, opts, ctx) do
+    Enum.map(filters, &facet_count(&1, opts, ctx))
+  end
+
+  defp facet_count(filter, opts, ctx) do
+    field = Keyword.fetch!(opts, :field)
+    query = Keyword.fetch!(opts, :query)
+
+    # load the required query to make sure it is up to date!
+    filter
+    |> Ash.load!(query, actor: ctx.actor)
+    |> Map.fetch!(query)
+    |> Ash.read!()
+    |> Enum.group_by(&Map.get(&1, field))
+    |> Enum.map(fn {facet, results} -> {facet, Enum.count(results)} end)
+    |> Enum.sort_by(&elem(&1, 1), :desc)
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Blog.Post.Filter.Calculations.Facet, <<70, 79, 82, 49, 0, 0, 20, ...>>, {:facet_count, 3}}
+```
+
+## Testing the Filter Resource
+
+Let's test our filter resource independently before integrating with LiveView:
+
+### Basic Filter Creation
+
+```elixir
+# Create a new filter with defaults
+default_filter = Blog.Post.Filter.new!()
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+%Blog.Post.Filter{
+  base_query: #Ash.Query<resource: Blog.Post>,
+  category: nil,
+  states: [:published],
+  search: nil,
+  mine?: false,
+  base_count: 51,
+  search_query: #Ash.Query<resource: Blog.Post>,
+  search_count: 51,
+  result_query: #Ash.Query<resource: Blog.Post, filter: #Ash.Filter<status in [:published]>>,
+  result_count: 25,
+  category_facets: [
+    {"elixir", 15},
+    {"phoenix", 14},
+    {"ash", 13},
+    {"devops", 4},
+    {"testing", 3},
+    {"ai", 2}
+  ],
+  status_facets: [published: 25, draft: 15, archived: 11],
+  author_facets: [{"Peter", 26}, {"Thomas", 11}, {"Alice", 6}, {"John", 4}, {"Paul", 3}, {"Bob", 1}],
+  __meta__: #Ecto.Schema.Metadata<:built, "">
+}
+```
+
+### Applying Search
+
+```elixir
+# Apply a search term
+search_filter = Blog.Post.Filter.update!(default_filter, %{search: "elixir"})
+IO.inspect(search_filter.search_count, label: "Posts matching 'elixir'")
+
+# View the facets after search
+IO.inspect(search_filter.category_facets, label: "Category facets after search")
+
+search_filter
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Posts matching 'elixir': 12
+Category facets after search: [{"elixir", 9}, {"ai", 1}, {"devops", 1}, {"testing", 1}]
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+%Blog.Post.Filter{
+  base_query: #Ash.Query<resource: Blog.Post>,
+  category: nil,
+  states: [:published],
+  search: "elixir",
+  mine?: false,
+  base_count: 51,
+  search_query: #Ash.Query<
+    resource: Blog.Post,
+    filter: #Ash.Filter<contains(string_downcase(title), "elixir")>
+  >,
+  search_count: 12,
+  result_query: #Ash.Query<
+    resource: Blog.Post,
+    filter: #Ash.Filter<contains(string_downcase(title), "elixir") and status in [:published]>
+  >,
+  result_count: 5,
+  category_facets: [{"elixir", 9}, {"ai", 1}, {"devops", 1}, {"testing", 1}],
+  status_facets: [published: 5, archived: 5, draft: 2],
+  author_facets: [{"Peter", 4}, {"Thomas", 4}, {"John", 2}, {"Alice", 1}, {"Paul", 1}],
+  __meta__: #Ecto.Schema.Metadata<:built, "">
+}
+```
+
+### Combining Filters
+
+```elixir
+# Apply multiple filters
+combined_filter = 
+  Blog.Post.Filter.update!(default_filter, %{
+    search: "websocket",
+    category: "phoenix",
+    states: [:published, :draft]
+  })
+
+IO.inspect(combined_filter.result_count, label: "Final filtered count")
+
+# Get the actual results
+results = Ash.read!(combined_filter.result_query)
+Kino.DataTable.new(results, name: "Filtered Results", keys: [:title, :author, :category, :status])
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Final filtered count: 2
+```
+
+<!-- livebook:{"output":true} -->
+
+```text
+[%{id: "69094612-7b4f-41cf-b018-498692ce661d", status: :published, title: "WebSocket Scaling with Phoenix Channels", author: "Alice", category: "phoenix", calculations: %{}, aggregates: %{}}, %{id: "6c4e1caa-6e99-49af-ad9a-efa970c14dbc", status: :published, title: "WebSocket Scaling with Phoenix Channels", author: "Peter", category: "phoenix", calculations: %{}, aggregates: %{}}]
+```
+
+### Actor-based Filtering
+
+```elixir
+# Test the "mine?" filter with an actor
+peter_filter = 
+  Blog.Post.Filter.new!()
+  |> Blog.Post.Filter.update!(%{mine?: true}, actor: "Peter")
+
+IO.inspect(peter_filter.result_query, label: "Peter's posts")
+
+# View Peter's posts
+Ash.read!(peter_filter.result_query)
+|> Kino.DataTable.new(name: "Peter's Posts", keys: [:title, :author, :status])
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Peter's posts: #Ash.Query<
+  resource: Blog.Post,
+  filter: #Ash.Filter<author == "Peter" and status in [:published]>
+>
+```
+
+<!-- livebook:{"output":true} -->
+
+```text
+[%{id: "1626ad2b-6ebc-40ff-9039-9ddfe7344cc0", status: :published, title: "Building Real-Time Features with Phoenix LiveView", author: "Peter", category: "phoenix", calculations: %{}, aggregates: %{}}, %{id: "22461acc-ddf4-4d48-bd77-efec47bc32ea", status: :published, title: "Optimizing Ecto Queries for Large Datasets", author: "Peter", category: "elixir", calculations: %{}, aggregates: %{}}, %{id: "2535c5bd-d647-421d-a847-c43f86f03bdb", status: :published, title: "Ash Authentication: A Practical Guide", author: "Peter", category: "ash", calculations: %{}, aggregates: %{}}, %{id: "6c4e1caa-6e99-49af-ad9a-efa970c14dbc", status: :published, title: "WebSocket Scaling with Phoenix Channels", author: "Peter", category: "phoenix", calculations: %{}, aggregates: %{}}, %{id: "6f03b8ee-ad23-49bb-bb81-9fe6118c1226", status: :published, title: "Ash Authentication: A Practical Guide", author: "Peter", category: "ash", calculations: %{}, aggregates: %{}}, %{id: "77ce395f-8ea5-40de-989a-f0364fe28564", status: :published, title: "Declarative Workflows in Ash Flow", author: "Peter", category: "ash", calculations: %{}, aggregates: %{}}, %{id: "b85d2564-a59a-46c4-8698-c2d3acc64e51", status: :published, title: "Optimizing Ecto Queries for Large Datasets", author: "Peter", category: "elixir", calculations: %{}, aggregates: %{}}, %{id: "d02f3b18-6e69-41c8-a277-d5ae52fbecdb", status: :published, title: "Declarative Workflows in Ash Flow", author: "Peter", category: "ash", calculations: %{}, aggregates: %{}}, %{id: "d109fe43-fa32-4268-ad7a-eaf3705079a4", status: :published, title: "Deploying Phoenix Apps to Kubernetes", author: "Peter", category: "phoenix", calculations: %{}, aggregates: %{}}, %{id: "ea9ea497-017c-4325-8f10-a23c87f8898e", status: :published, title: "Real-World Authorization with Phoenix and Bodyguard", author: "Peter", category: "phoenix", calculations: %{}, aggregates: %{}}, %{id: "ed6192b8-1919-4b3e-b6b1-a33eb87066c1", status: :published, title: "Building Real-Time Features with Phoenix LiveView", author: "Peter", category: "phoenix", calculations: %{}, aggregates: %{}}]
+```
+
+## Phoenix LiveView Integration
+
+This livebook is using [kino_phoenix_livebook](https://github.com/elepedus/kino_phoenix_live_view). It comes with a [default layout](https://github.com/elepedus/kino_phoenix_live_view/blob/main/lib/KinoPhoenixLiveView/layout.ex) that does not include DaisyUI. That's why I define a custom layout for our LiveView.
+
+```elixir
+defmodule ExampleWeb.Layout do
+  use Phoenix.Component
+  
+  alias KinoPhoenixLiveView.ProxyEndpoint
+
+  def render("root.html", assigns) do
+    ~H"""
+    <!DOCTYPE html>
+    <html lang="en" class="h-full">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <.live_title>
+          <%= assigns[:page_title] || "Phoenix Playground" %>
+        </.live_title>
+        <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/wcAAgAB/ajN8ioAAAAASUVORK5CYII=">
+      </head>
+      <body>
+        <script src={ProxyEndpoint.static_path("/assets/phoenix/phoenix.js")}></script>
+        <script src={ProxyEndpoint.static_path("/assets/phoenix_live_view/phoenix_live_view.js")}></script>
+        <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+        <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+        
+        <script>
+          // Set global hooks and uploaders objects to be used by the LiveSocket,
+          // so they can be overwritten in user provided templates.
+          window.hooks = {}
+          window.uploaders = {}
+
+          let liveSocket =
+            new window.LiveView.LiveSocket(
+              "<%= ProxyEndpoint.static_path("/proxylive") %>",
+              window.Phoenix.Socket,
+              { hooks, uploaders, transport: window.Phoenix.LongPoll }
+            )
+          liveSocket.connect()
+        </script>
+        <div class="mx-auto">
+          <%= @inner_content %>
+        </div>
+      </body>
+    </html>
+    """
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, ExampleWeb.Layout, <<70, 79, 82, 49, 0, 0, 29, ...>>, {:render, 2}}
+```
+
+### Core Components
+
+The follwing module defines some form components similar to the default core components found in every Phoenix project.
+
+On thing to point out is the function for the custom input type `facet-filter`, that takes a list of facets (list of labels and counts):
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+[
+  {"Option 1", 42},
+  {"Option 2", 23},
+  {"Option 3", 23},
+  {"Option 4", 2},
+]
+```
+
+When `multiple` is `true`, they and renders as checkboxes, otherwise as radio-buttons.
+
+```elixir
+defmodule ExampleWeb.CoreComponents do
+  @moduledoc false
+
+  use Phoenix.Component
+
+  alias Phoenix.HTML.FormField
+
+  attr(:id, :any, default: nil)
+  attr(:name, :any)
+  attr(:label, :string, default: nil)
+
+  attr(:hint, :string,
+    default: nil,
+    doc: "hint text displayed as a tooltip next to the label"
+  )
+
+  attr(:value, :any)
+
+  attr(:type, :string,
+    default: "text",
+    values: ~w(checkbox color date datetime datetime-local email file month number password
+               search select tel text textarea time url week hidden facet-filter)
+  )
+
+  attr(:field, FormField,
+    doc: "a form field struct retrieved from the form, for example: @form[:email]"
+  )
+
+  attr(:errors, :list, default: [])
+  attr(:checked, :boolean, doc: "the checked flag for checkbox inputs")
+  attr(:prompt, :string, default: nil, doc: "the prompt for select inputs")
+
+  attr(:options, :list, doc: "the options to pass to Phoenix.HTML.Form.options_for_select/2")
+
+  attr(:multiple, :boolean, default: false, doc: "the multiple flag for select inputs")
+  attr(:class, :string, default: nil, doc: "the input class to use over defaults")
+
+  attr(:error_class, :string,
+    default: nil,
+    doc: "the input error class to use over defaults"
+  )
+
+  attr(:rest, :global,
+    include: ~w(accept autocomplete capture cols disabled form list max maxlength min minlength
+                multiple pattern placeholder readonly required rows size step)
+  )
+
+  def input(%{field: %FormField{} = field} = assigns) do
+    errors = if Phoenix.Component.used_input?(field), do: field.errors, else: []
+
+    assigns
+    |> assign(field: nil, id: assigns.id || field.id)
+    |> assign(:errors, errors)
+    |> assign_new(:name, fn ->
+      if assigns.multiple, do: field.name <> "[]", else: field.name
+    end)
+    |> assign_new(:value, fn -> field.value end)
+    |> input()
+  end
+
+  def input(%{type: "facet-filter"} = assigns) do
+    %{multiple: multiple, value: value} = assigns
+    
+    assigns =
+      assigns
+      |> assign(:type, if(multiple, do: "checkbox", else: "radio"))
+      |> assign_new(:selection, fn -> List.wrap(value) end)
+
+    ~H"""
+    <fieldset class="fieldset bg-base-100 border-base-300 rounded-box w-full border p-4">
+      <legend class="fieldset-legend">{@label}</legend>
+
+      <input type="hidden" name={@name} value="" />
+
+      <label :if={@type == "radio"} class="label">
+        <input
+          class="radio radio-sm"
+          type="radio"
+          name={@name}
+          value=""
+          checked={@selection == []}
+        /> All
+      </label>
+
+      <label class="label" :if={@type == "checkbox" and @options == []}>No filters</label>
+
+      <label :for={{option, count} <- @options} class="label">
+        <input
+          class={[@type, @type <> "-sm"]}
+          type={@type}
+          name={@name}
+          aria-label={option}
+          value={option}
+          checked={option in @selection}
+        />
+        <div class="flex items-center justify-between grow">
+          <span>{option}</span><span>{count}</span>
+        </div>
+      </label>
+
+      <.error :for={msg <- @errors}>{msg}</.error>
+    </fieldset>
+    """
+  end
+
+  def input(%{type: "checkbox"} = assigns) do
+    assigns =
+      assign_new(assigns, :checked, fn ->
+        Phoenix.HTML.Form.normalize_value("checkbox", assigns[:value])
+      end)
+
+    ~H"""
+    <div class="fieldset mb-2">
+      <label>
+        <input type="hidden" name={@name} value="false" disabled={@rest[:disabled]} />
+        <span class="label">
+          <input
+            type="checkbox"
+            id={@id}
+            name={@name}
+            value="true"
+            checked={@checked}
+            class={@class || "checkbox checkbox-sm"}
+            {@rest}
+          />{@label}
+        </span>
+      </label>
+      <.error :for={msg <- @errors}>{msg}</.error>
+    </div>
+    """
+  end
+
+  # All other inputs text, datetime-local, url, password, etc. are handled here...
+  def input(assigns) do
+    ~H"""
+    <div class="fieldset mb-2">
+      <label>
+        <.input_label label={@label} />
+        <input
+          type={@type}
+          name={@name}
+          id={@id}
+          value={Phoenix.HTML.Form.normalize_value(@type, @value)}
+          class={[@class || "input w-full", @errors != [] && (@error_class || "input-error")]}
+          {@rest}
+        />
+      </label>
+      <.error :for={msg <- @errors}>{msg}</.error>
+    </div>
+    """
+  end
+
+  attr(:label, :string, default: nil)
+
+  def input_label(assigns) do
+    ~H"""
+    <span :if={@label} class="label mb-1 flex items-center gap-1">
+      {@label}
+    </span>
+    """
+  end
+
+  # Helper used by inputs to generate form errors
+  def error(assigns) do
+    ~H"""
+    <p class="label text-error flex items-center gap-1">
+      {render_slot(@inner_block)}
+    </p>
+    """
+  end
+
+  slot :tab do
+    attr(:name, :string)
+    attr(:label, :string)
+  end
+
+  attr(:change, :any, required: true)
+  attr(:selected, :string, required: true)
+  attr(:class, :any, default: nil)
+  attr(:rest, :global)
+
+  def tabs(assigns) do
+    ~H"""
+    <div class={["tabs tabs-lift", @class]} {@rest}>
+      <%= for tab <- @tab do %>
+        <input 
+          type="radio" 
+          name={tab[:name]} 
+          class="tab"
+          aria-label={tab[:label]}
+          checked={tab[:name] == @selected} 
+          phx-click={@change}
+          phx-value-tab={tab[:name]} />
+  
+        <div 
+          :if={tab[:name] == @selected}
+          class="tab-content bg-base-100 border-base-300">
+          {render_slot(tab)}
+        </div>
+      <% end %>
+    </div>
+    """
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, ExampleWeb.CoreComponents, <<70, 79, 82, 49, 0, 0, 165, ...>>, {:tabs, 1}}
+```
+
+### The Beauty of AshPhoenix.Form
+
+Notice how clean our LiveView becomes when filter logic lives in the embedded resource:
+
+* No manual changeset building
+* No filter validation in the LiveView
+* Automatic form error handling
+* All business logic contained in the resource
+
+The LiveView only handles:
+
+1. Creating the filter resource
+2. Updating it through AshPhoenix.Form
+3. Rendering the UI
+
+### Form State Management
+
+The filter resource acts as our form's state container:
+
+```elixir
+defmodule ExampleWeb.LiveView do
+  use Phoenix.LiveView
+
+  import ExampleWeb.CoreComponents
+
+  alias Blog.Post.Filter
+
+  require Logger
+
+  def mount(_params, _session, socket) do
+    socket
+    |> assign(:current_user, "Peter")
+    |> assign_form()
+    |> assign(:tab, "results")
+    |> ok()
+  end
+
+  defp assign_form(socket, filter \\ Filter.new!()) do
+    %{current_user: current_user} = socket.assigns
+
+    filter_form =
+      filter
+      |> AshPhoenix.Form.for_update(:update, as: "filter")
+      |> to_form()
+
+    posts = Ash.read!(filter.result_query, actor: current_user)
+
+    socket
+    |> assign(:posts, posts)
+    |> assign(:filter, filter)
+    |> assign(:filter_form, filter_form)
+  end
+
+  def render(assigns) do
+    ~H"""
+    <div class="navbar bg-base-100 shadow-sm">
+      <div class="flex-1">
+        <a class="btn btn-ghost text-xl">My Blog</a>
+      </div>
+      <div class="flex-none">
+        <ul class="menu menu-horizontal px-1">
+          <li><a>Logged in as <span class="font-semibold">{@current_user}</span></a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="flex p-4 bg-base-200 gap-4">
+      <div class="w-80 shrink-0">
+        <.filter_form for={@filter_form} />
+      </div>
+
+      <.tabs selected={@tab} change="tab:change" class="grow">
+        <:tab name="results" label="Results">
+          <.post_list posts={@posts} />
+        </:tab>
+
+        <:tab name="filter" label="Filter">
+          <pre class="text-xs p-4">{inspect(@filter, pretty: true)}</pre>
+        </:tab>
+      </.tabs>
+    </div>
+    """
+  end
+
+  def handle_event("tab:change", %{"tab" => tab}, socket) do
+    socket
+    |> assign(:tab, tab)
+    |> noreply()
+  end
+
+  def handle_event("filter:update", %{"filter" => filter_params}, socket) do
+    %{filter_form: filter_form, current_user: current_user} = socket.assigns
+
+    # AshPhoenix.Form handles validation and updates
+    case AshPhoenix.Form.submit(filter_form, params: filter_params, action_opts: [actor: current_user]) do
+      {:ok, filter} ->
+        socket
+        |> assign_form(filter)
+        |> noreply()
+
+      {:error, filter_form} ->
+        socket
+        |> assign(:filter_form, filter_form)
+        |> noreply()
+    end
+  end
+
+  attr(:for, :any)
+
+  def filter_form(assigns) do
+    ~H"""
+    <.form
+      :let={form}
+      for={@for}
+      as={:filter}
+      phx-change="filter:update"
+      phx-submit="filter:update"
+    >
+      <.input
+        type="text"
+        field={form[:search]}
+        placeholder={"Search #{@for.data.base_count} posts"}
+        class="input w-full rounded-full"
+      />
+
+      <fieldset class="fieldset bg-base-100 border-base-300 rounded-box border px-4">
+        <legend class="fieldset-legend">Only mine</legend>
+        <.input
+          type="checkbox"
+          field={form[:mine?]}
+          label="Show only my posts?"
+          class="toggle toggle-primary"
+        />
+      </fieldset>
+
+      <.input
+        type="facet-filter"
+        label="Category"
+        field={form[:category]}
+        options={@for.data.category_facets}
+      />
+
+      <.input
+        type="facet-filter"
+        label="Status"
+        field={form[:states]}
+        options={@for.data.status_facets}
+        multiple
+      />
+
+      <.input
+        type="facet-filter"
+        label="Author"
+        field={form[:authors]}
+        options={@for.data.author_facets}
+        multiple
+      />
+    </.form>
+    """
+  end
+
+  attr :posts, :list, required: true
+
+  def post_list(assigns) do
+    ~H"""
+    <ul class="list bg-base-100">
+      <li :for={post <- @posts} class="list-row">
+        <div class="list-col-grow">
+          <div>{post.title}</div>
+          <div class="text-xs opacity-60">
+            <span class="font-semibold">{post.status}</span>
+            in
+            <span class="font-semibold">{post.category}</span>
+            by
+            <span class="font-semibold">{post.author}</span>
+          </div>
+        </div>
+      </li>
+    </ul>
+    """
+  end
+
+  defp noreply(socket), do: {:noreply, socket}
+  defp ok(socket), do: {:ok, socket}
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, ExampleWeb.LiveView, <<70, 79, 82, 49, 0, 0, 89, ...>>, {:ok, 1}}
+```
+
+### Interactive Demo
+
+Now let's see our filter in action! The form below demonstrates:
+
+* Real-time facet updates as you type
+* Multi-select filters for status and author
+* Single-select category filter
+* Progressive filtering with count displays
+
+Try different combinations to see how the calculations update automatically:
+
+```elixir
+KinoPhoenixLiveView.new(
+  path: "/proxy/apps/ash-calculations",
+  live_view: ExampleWeb.LiveView,
+  root_layout: ExampleWeb.Layout
+)
+```
