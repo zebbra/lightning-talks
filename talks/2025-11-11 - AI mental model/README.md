@@ -31,7 +31,7 @@ As someone wrote: **"AI is an amplifier that will boost the volume of your softw
 
 To make sense of that balance, I created a model with five layers that describe how humans and AI can collaborate at different maturity levels:
 
-![4+1 Layer Model](dev%20team%20whiteboard%20-%20AI%20Model.jpg)
+![4+1 Layer Model](dev%20team%20whiteboard%20-%20AI%20model.jpg)
 
 | **Layer** | **Focus** |
 |-----------|------------|
