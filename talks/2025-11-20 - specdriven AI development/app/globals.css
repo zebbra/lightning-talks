@@ -1,0 +1,267 @@
+@import "tailwindcss";
+
+@theme {
+  --font-family-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  
+  --color-glass-bg: oklch(100% 0 0 / 0.7);
+  --color-glass-border: oklch(100% 0 0 / 0.18);
+  --color-glass-bg-dark: oklch(20% 0 0 / 0.7);
+  --color-glass-border-dark: oklch(100% 0 0 / 0.1);
+}
+
+:root {
+  --background: #f5f5f7;
+  --foreground: #1d1d1f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #000000;
+    --foreground: #f5f5f7;
+  }
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  background-image: 
+    radial-gradient(at 27% 37%, hsla(215, 98%, 61%, 0.15) 0px, transparent 50%),
+    radial-gradient(at 97% 21%, hsla(125, 98%, 72%, 0.15) 0px, transparent 50%),
+    radial-gradient(at 52% 99%, hsla(354, 98%, 61%, 0.15) 0px, transparent 50%),
+    radial-gradient(at 10% 29%, hsla(256, 96%, 67%, 0.15) 0px, transparent 50%),
+    radial-gradient(at 97% 96%, hsla(38, 60%, 74%, 0.15) 0px, transparent 50%),
+    radial-gradient(at 33% 50%, hsla(222, 67%, 73%, 0.15) 0px, transparent 50%),
+    radial-gradient(at 79% 53%, hsla(343, 68%, 79%, 0.15) 0px, transparent 50%);
+  background-attachment: fixed;
+}
+
+/* Glass effect utility */
+.glass {
+  background: rgba(255, 255, 255, 0.7) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+  backdrop-filter: blur(20px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  box-shadow: 
+    0 8px 32px 0 rgba(31, 38, 135, 0.07),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.1) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  .glass {
+    background: rgba(20, 20, 20, 0.7);
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+}
+
+.glass-hover {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-hover:hover {
+  background: rgba(255, 255, 255, 0.85);
+  transform: translateY(-2px);
+  box-shadow: 
+    0 12px 40px 0 rgba(31, 38, 135, 0.12),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.2);
+}
+
+@media (prefers-color-scheme: dark) {
+  .glass-hover:hover {
+    background: rgba(30, 30, 30, 0.85);
+  }
+}
+
+/* Tiptap editor styles */
+.ProseMirror {
+  outline: none;
+  min-height: 200px;
+  padding: 1.5rem;
+  line-height: 1.8;
+  font-size: 1rem;
+  color: #1d1d1f;
+}
+
+@media (prefers-color-scheme: dark) {
+  .ProseMirror {
+    color: #f5f5f7;
+  }
+}
+
+.ProseMirror p {
+  margin: 0.75rem 0;
+  color: inherit;
+}
+
+.ProseMirror h1 {
+  font-size: 2.25rem;
+  font-weight: 700;
+  margin: 1.5rem 0 0.75rem;
+  letter-spacing: -0.025em;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  color: transparent;
+}
+
+.ProseMirror h2 {
+  font-size: 1.875rem;
+  font-weight: 600;
+  margin: 1.25rem 0 0.625rem;
+  letter-spacing: -0.02em;
+}
+
+.ProseMirror h3 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 1rem 0 0.5rem;
+  letter-spacing: -0.015em;
+}
+
+.ProseMirror ul,
+.ProseMirror ol {
+  padding-left: 1.75rem;
+  margin: 0.75rem 0;
+}
+
+.ProseMirror li {
+  margin: 0.25rem 0;
+}
+
+.ProseMirror a {
+  color: #667eea;
+  text-decoration: none;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(102, 126, 234, 0.3);
+  transition: border-color 0.2s ease;
+}
+
+.ProseMirror a:hover {
+  border-bottom-color: #667eea;
+}
+
+.ProseMirror code {
+  background: var(--glass-bg);
+  padding: 0.2rem 0.4rem;
+  border-radius: 6px;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+  font-size: 0.9em;
+  border: 1px solid var(--glass-border);
+}
+
+.ProseMirror pre {
+  background: rgba(20, 20, 30, 0.9);
+  color: #f5f5f7;
+  padding: 1.25rem;
+  border-radius: 12px;
+  overflow-x: auto;
+  margin: 1rem 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+}
+
+.ProseMirror pre code {
+  background: transparent;
+  padding: 0;
+  border: none;
+}
+
+.ProseMirror blockquote {
+  border-left: 4px solid rgba(102, 126, 234, 0.5);
+  padding-left: 1.25rem;
+  margin: 1rem 0;
+  font-style: italic;
+  color: #6b7280;
+}
+
+@media (prefers-color-scheme: dark) {
+  .ProseMirror blockquote {
+    color: #9ca3af;
+  }
+}
+
+.ProseMirror.ProseMirror-focused {
+  outline: none;
+}
+
+/* Placeholder */
+.ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: rgba(107, 114, 128, 0.6);
+  pointer-events: none;
+  height: 0;
+  font-weight: 400;
+}
+
+/* Smooth animations */
+* {
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+/* Animations */
+@keyframes slide-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Custom Scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 10px;
+  margin: 8px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(158, 158, 158, 0.4);
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(158, 158, 158, 0.6);
+  background-clip: padding-box;
+}
+
+/* Calendar fixes */
+.rdp {
+  --rdp-cell-size: 36px !important;
+  margin: 0 !important;
+}
+
+.rdp-months {
+  justify-content: center !important;
+}
+
+.rdp-month {
+  width: 100% !important;
+}
+
+.rdp-table {
+  max-width: 100% !important;
+}
+
+.rdp-day {
+  width: 36px !important;
+  height: 36px !important;
+  font-size: 14px !important;
+}
+
+.rdp-cell {
+  padding: 2px !important;
+}
