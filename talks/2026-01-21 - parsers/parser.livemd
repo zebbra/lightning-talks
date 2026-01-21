@@ -1,0 +1,306 @@
+# Parsers
+
+```elixir
+Mix.install([
+  {:nimble_parsec, "~> 1.4"}
+])
+```
+
+## What is a parser?
+
+> **Parsing**, **syntax analysis**, or **syntactic analysis** is a process of analyzing a string of symbols, either in natural language, computer languages or data structures, conforming to the rules of a formal grammar by breaking it into parts. The term parsing comes from Latin pars (orationis), meaning part (of speech).
+> 
+> Source: https://en.wikipedia.org/wiki/Parsing
+
+So a parser is basically something that transform data into a syntax that our program can understand, which is called _Abstract Syntax Tree_ or _AST_:
+
+```mermaid
+graph LR
+    Input --> p([Parser]) --> AST
+```
+
+For many things we rely on parsers to convert string or binary data into a data structure. Often we rely on parsers that already exist:
+
+* ISO Date/DateTime
+* JSON
+* XML
+* ....
+
+But what if such a parser does not exist? For example for a basic arithmetic calculation, eg.
+
+* `1+1`
+* `42-2`
+* `23*2`
+* `10/2`
+
+First, we have to think about the syntax of our language:
+
+* We have the following _tokens_: a positive `<number>` and `<op>`
+* The grammar is `<number><operator><number>`
+
+We can formally specify this using [EBNF](https://en.wikipedia.org/wiki/Extended_Backus%E2%80%93Naur_form) (_Extended Backus-Naur form_):
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+calculation = number , operator , number ;
+operator    = "+" | "-" | "*" | "/" ;
+number      = digit , { digit } ;
+digit       = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+```
+
+## Pure Elixir
+
+In Elixir we can use pattern matching to implement the parser:
+
+```elixir
+defmodule Calculation.Parser do
+  @type op :: :+ | :- | :* | :/
+  @type ast :: {integer(), op(), integer()}
+
+  def parse(str) when is_binary(str) do
+    with {:ok, left, rest}  <- parse_int(str),
+         # {:ok, rest}        <- parse_ws(rest),
+         {:ok, op, rest}    <- parse_op(rest),
+         # {:ok, rest}        <- parse_ws(rest),
+         {:ok, right, rest} <- parse_int(rest),
+         {:ok, :eos}        <- parse_eos(rest) do
+      {:ok, {op, left, right}}
+    end
+  end
+
+  # This could be added to support whitespace: "1 + 1"
+  # defp parse_ws(<<" ", rest::binary>>), do: parse_ws(rest)
+  # defp parse_ws(<<rest::binary>>), do: {:ok, rest}
+  
+  # --- integer parsing ---
+
+  defp parse_int(<<c, rest::binary>>) when c in ?0..?9 do
+    {digits, rest} = take_digits(rest, <<c>>)
+    {:ok, String.to_integer(digits), rest}
+  end
+
+  defp parse_int(_), do: {:error, :expected_number}
+
+  defp take_digits(<<c, rest::binary>>, acc) when c in ?0..?9 do
+    take_digits(rest, <<acc::binary, c>>)
+  end
+
+  defp take_digits(rest, acc), do: {acc, rest}
+
+  # --- operator parsing ---
+
+  defp parse_op(<<"+", rest::binary>>), do: {:ok, :+, rest}
+  defp parse_op(<<"-", rest::binary>>), do: {:ok, :-, rest}
+  defp parse_op(<<"*", rest::binary>>), do: {:ok, :*, rest}
+  defp parse_op(<<"/", rest::binary>>), do: {:ok, :/, rest}
+  defp parse_op(_), do: {:error, :expected_operator}
+
+  # --- parse eof ---
+
+  defp parse_eos(<<>>), do: {:ok, :eos}
+  defp parse_eos(_), do: {:error, :expected_eos}
+end
+
+input = "1+1"
+ast   = Calculation.Parser.parse(input)
+
+IO.inspect(ast, label: input)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+1+1: {:ok, {:+, 1, 1}}
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:ok, {:+, 1, 1}}
+```
+
+```elixir
+examples = [
+  # valid
+  "1+1",
+  "42-2",
+  "23*2",
+  "10/2",
+  
+  # invalid
+  "",
+  "1 + 2",
+  "1?2",
+  "1+2 "
+]
+
+Enum.map(examples, &{&1, Calculation.Parser.parse(&1)})
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+[
+  {"1+1", {:ok, {:+, 1, 1}}},
+  {"42-2", {:ok, {:-, 42, 2}}},
+  {"23*2", {:ok, {:*, 23, 2}}},
+  {"10/2", {:ok, {:/, 10, 2}}},
+  {"", {:error, :expected_number}},
+  {"1 + 2", {:error, :expected_operator}},
+  {"1?2", {:error, :expected_operator}},
+  {"1+2 ", {:error, :expected_eos}}
+]
+```
+
+We can then write an interpreter that can evaluate the calculation
+
+```elixir
+defmodule Calculation.Interpreter do
+  def eval({op, left, right}) when is_integer(left) and is_integer(right) do
+    do_op(op, left, right)
+  end
+
+  def eval(_), do: {:error, :invalid_input}
+
+  defp do_op(:+, a, b), do: {:ok, a + b}
+  defp do_op(:-, a, b), do: {:ok, a - b}
+  defp do_op(:*, a, b), do: {:ok, a * b}
+  defp do_op(:/, a, b), do: {:ok, div(a, b)}
+  defp do_op(_, _, _), do: {:ok, :invalid_op}
+end
+
+input = "1+1"
+{:ok, ast} = Calculation.Parser.parse(input)
+{:ok, res} = Calculation.Interpreter.eval(ast)
+
+IO.inspect(input, label: "Input")
+IO.inspect(ast, label: "AST")
+IO.inspect(res, label: "Result")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Input: "1+1"
+AST: {:+, 1, 1}
+Result: 2
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+2
+```
+
+```elixir
+Enum.map(examples, fn input ->
+  res = with {:ok, ast} <- Calculation.Parser.parse(input),
+          do: Calculation.Interpreter.eval(ast)
+
+  {input, res}
+end)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+[
+  {"1+1", {:ok, 2}},
+  {"42-2", {:ok, 40}},
+  {"23*2", {:ok, 46}},
+  {"10/2", {:ok, 5}},
+  {"", {:error, :expected_number}},
+  {"1 + 2", {:error, :expected_operator}},
+  {"1?2", {:error, :expected_operator}},
+  {"1+2 ", {:error, :expected_eos}}
+]
+```
+
+## NimbleParsec
+
+Fortunately, there is the [nimble_parsec](https://hexdocs.pm/nimble_parsec/NimbleParsec.html) library that simplifies generating parsers in Elixir:
+
+```elixir
+defmodule Calculation.NimbleParser.Grammar do
+  @moduledoc """
+  Helper function that define the grammar of our parser. 
+  
+  NimbleParsec recommends creating a separate module, but this could be 
+  in the same module as well.
+  """
+  
+  import NimbleParsec
+
+  # label is used in error messages
+  def number(), do: integer(min: 1) |> label("positiv number")
+  
+  def operator() do
+    choice([
+      replace(string("+"), :+),
+      replace(string("-"), :-),
+      replace(string("*"), :*),
+      replace(string("/"), :/)
+    ]) 
+    |> label("operator (+, -, *, /)")
+  end
+
+  def calculation() do
+    number()
+    |> concat(operator())
+    |> concat(number())
+    |> eos()
+    |> reduce({__MODULE__, :to_ast, []})
+  end
+
+  def to_ast([left, op, right]), do: {op, left, right}  
+end
+
+defmodule Calculation.NimbleParser do
+  import NimbleParsec
+  import Calculation.NimbleParser.Grammar
+
+  @type op :: :+ | :- | :* | :/
+  @type ast :: {op(), integer(), integer()}
+
+  # this defines a private function that parses the calculation
+  # you can set debug: true to see how the parser is implemented
+  defparsecp :parse_calculation, calculation(), debug: false
+
+  @doc "Public API to match our first parser"
+  @spec parse(input :: binary()) :: {:ok, ast()} | {:error, binary()}
+  def parse(input) do
+    case parse_calculation(input) do
+      {:ok, [calc], _rest, _ctx, _line, _offset} -> {:ok, calc}
+      {:error, error, _rest, _ctx, _line, _offset} -> {:error, error}
+    end
+  end
+end
+
+Calculation.NimbleParser.parse("1+1")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:ok, {:+, 1, 1}}
+```
+
+```elixir
+Enum.map(examples, &{&1, Calculation.NimbleParser.parse(&1)})
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+[
+  {"1+1", {:ok, {:+, 1, 1}}},
+  {"42-2", {:ok, {:-, 42, 2}}},
+  {"23*2", {:ok, {:*, 23, 2}}},
+  {"10/2", {:ok, {:/, 10, 2}}},
+  {"", {:error, "expected positiv number"}},
+  {"1 + 2", {:error, "expected operator (+, -, *, /)"}},
+  {"1?2", {:error, "expected operator (+, -, *, /)"}},
+  {"1+2 ", {:error, "expected end of string"}}
+]
+```
